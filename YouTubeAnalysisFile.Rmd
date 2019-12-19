@@ -1,0 +1,329 @@
+---
+title: "YouTubeAnalysisHTML"
+author: "wangyuy"
+date: "12/19/2019"
+output: html_document
+---
+
+1. Installing packages
+```{r}
+#installing packages
+install.packages("tuber")
+install.packages("gridExtra")
+```
+```{r}
+# install.packages('devtools')
+devtools::install_github("soodoku/tuber", build_vignettes = TRUE)
+```
+
+2. Loading libraries
+```{r}
+#loading libraries
+library(tuber) # youtube API
+library(magrittr) 
+library(tidyverse) 
+library(purrr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(wordcloud)
+library(tm)
+library(lubridate)
+library(plyr)
+library(gridExtra)
+
+```
+
+3. Authentication
+```{r}
+#authentication from account 1
+client_id = "XXX"
+client_secret = "XXX"
+api_key = "XXX"
+```
+
+```{r}
+client_id = "XXX"
+client_secret = "XXX"
+```
+
+```{r}
+# use the youtube oauth 
+yt_oauth(app_id = client_id,
+         app_secret = client_secret,
+         token = '')
+```
+
+4.Reading in scraped URLS
+```{r}
+#read in scraped youtube urls
+raw_urls = read_csv("/Users/yuyangwang 1/Desktop/OIDD 245/Data Project 2/youtube_urls.csv")
+```
+
+5. Scraping data from YouTube API
+```{r}
+#function to extract the video ID
+getID = function(url) {
+  id = str_split(string = url, 
+    pattern = "=", 
+    n = 2,
+    simplify = TRUE)[ , 2]
+  return (id)
+}
+raw_urls$vid_id = sapply(raw_urls$URL, getID)
+raw_urls = unique(raw_urls)
+
+# function to scrape stats for all vids
+get_all_stats = function(id) {
+  get_stats(video_id = id)
+} 
+
+get_all_details = function(id) {
+  get_video_details(video_id = id)
+}
+
+#stats of all vids - ONLY RUN WHEN NEED (quota of queries per day)
+video_all_stats = map_df(.x = raw_urls$vid_id, .f = get_all_stats)
+
+#remove rows with null val
+video_all_stats = na.omit(video_all_stats)
+
+#join
+merged_id = merge(x = raw_urls, y = video_all_stats, by.x = "vid_id", by.y = "id", all.y = TRUE)
+
+#getting video details
+videodets = lapply(as.character(merged_id$vid_id), function(x){
+  get_video_details(video_id = x, part="snippet")
+})
+
+#appending to data frame
+for (i in 1 : 681) {
+  merged_id[i,]$publishedAt = videodets[[i]][["items"]][[1]][["snippet"]][["publishedAt"]]
+  merged_id[i,]$channelId = videodets[[i]][["items"]][[1]][["snippet"]][["channelId"]]
+  merged_id[i,]$description = videodets[[i]][["items"]][[1]][["snippet"]][["description"]]
+  merged_id[i,]$tags = paste(videodets[[i]][["items"]][[1]][["snippet"]][["tags"]], collapse = ' ')
+}
+
+#getting channel stats
+channeldets = lapply(as.character(merged_id$channelId), function(x){
+  get_channel_stats(x)
+})
+
+#adding channel stats to main df
+for (i in 1 : 681) {
+  merged_id[i,]$channel_views = as.numeric(channeldets[[i]][["statistics"]][["viewCount"]])
+  merged_id[i,]$channel_title = channeldets[[i]][["snippet"]][["title"]]
+  merged_id[i,]$channel_desc = channeldets[[i]][["snippet"]][["description"]]
+  merged_id[i,]$channel_subs = channeldets[[i]][["statistics"]][["subscriberCount"]]
+}
+```
+
+6. Manipulation to get some basic info on the videos scraped from homepage
+```{r}
+#convert all to numerics
+merged_id$likeCount = as.numeric(merged_id$likeCount)
+merged_id$dislikeCount = as.numeric(merged_id$dislikeCount)
+merged_id$viewCount = as.numeric(merged_id$viewCount)
+merged_id$channel_subs = as.numeric(merged_id$channel_subs)
+merged_id$commentCount = as.numeric(merged_id$commentCount)
+
+#what is the median of views/likes/dislikes/subs that YouTube recommends to a new user
+median_vid_views = median(merged_id$viewCount)
+median_vid_likes = median(merged_id$likeCount)
+median_vid_dislikes = median(merged_id$dislikeCount)
+median_channel_subs = median(merged_id$channel_subs)
+
+#like to dislike ratio
+merged_id$like_dislike_ratio = merged_id$likeCount / merged_id$dislikeCount
+
+#subscriber engagement
+merged_id$subs_engage = merged_id$viewCount / merged_id$channel_subs
+
+#comments per view
+merged_id$comments_ratio = merged_id$viewCount / merged_id$commentCount
+
+#finding the best/worst dislike ratios
+df_filtered = merged_id %>% filter(likeCount > 100 & channel_subs > 100) %>% na.omit()
+worst_dislike_ratio = df_filtered[order(df_filtered$like_dislike_ratio), c("Link","channel_title","like_dislike_ratio")]
+best_like_ratio = df_filtered[order(-df_filtered$like_dislike_ratio), c("Link","channel_title","like_dislike_ratio")]
+head(worst_dislike_ratio, 15)
+head(best_like_ratio, 15)
+
+#creating histogram of data
+hist(df_like_dislike_ratio$like_dislike_ratio, main="Histogram for Like/Dislike Ratio among 600+ YouTube Videos", 
+     xlab="Like/Dislike Ratio", 
+     border="white", 
+     col="red",)
+
+#finding the best/worst subs engagement
+worst_subs_engagement = df_filtered[order(df_filtered$subs_engage), c("Link","channel_title","subs_engage")]
+best_subs_engagement = df_filtered[order(-df_filtered$subs_engage), c("Link","channel_title","subs_engage")]
+head(worst_subs_engagement, 10)
+head(best_subs_engagement, 10)
+
+#finding the best/worst comment ratio
+worst_comment_ratio = df_filtered[order(df_filtered$comments_ratio), c("Link","channel_title","comments_ratio")]
+best_comment_ratio = df_filtered[order(-df_filtered$comments_ratio), c("Link","channel_title","comments_ratio")]
+head(worst_comment_ratio, 10)
+head(best_comment_ratio, 10)
+```
+
+Generate wordcloud representing the videos shown
+```{r}
+#generating word cloud from top 100 vids scraped
+top100views = merged_id %>% filter(likeCount > 100 & channel_subs > 100) %>% na.omit()
+top100views = top100views[order(-top100views$viewCount),]
+top100views = head(top100views, 100)
+
+alldesc = ""
+
+for (i in 1:100) {
+  alldesc = paste(alldesc, top100views[i, "description"], sep=" ")
+}
+
+#corpus
+corpus = VCorpus(VectorSource(top100views$description))
+
+#Step 1: cleaning
+corp = tm_map(corpus, removePunctuation) 
+corp = tm_map(corp, removeNumbers) 
+corp = tm_map(corp, content_transformer(tolower) ,lazy=TRUE) 
+corp = tm_map(corp, content_transformer(removeWords), c("TIL") ,lazy=TRUE)
+corp = tm_map(corp, content_transformer(removeWords), stopwords("english") ,lazy=TRUE)
+corp = tm_map(corp, removeWords, c("the", "for", "is", "and")) 
+corp = tm_map(corp, stripWhitespace)
+
+dtm = DocumentTermMatrix(corp)
+dtms = removeSparseTerms(dtm, 0.983)
+dim(dtm)
+dim(dtms)
+dtms_m = as.matrix(dtms)
+
+# colSums adds up value over all of the Columns in a matrix
+# rowSums(m) is the equivalent over rows
+word.freq = colSums(dtms_m)
+word.freq = sort(word.freq, decreasing=T)
+d <- data.frame(word = names(word.freq),freq=word.freq)
+
+#create wordcloud
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+Load in data from 
+```{r}
+top50gamers = read_csv("/Users/yuyangwang 1/Desktop/OIDD 245/Data Project 2/top100game.csv")
+top50vloggers = read_csv("/Users/yuyangwang 1/Desktop/OIDD 245/Data Project 2/top100bloggers.csv")
+top50comedians = read_csv("/Users/yuyangwang 1/Desktop/OIDD 245/Data Project 2/top100comedy.csv")
+colnames(top50vloggers)[which(names(top50vloggers) == "user")] <- "username"
+
+```
+
+Edit the numbers
+```{r}
+
+#function that converst the strings to numbers
+convert = function(number) {
+  if (grepl("B", number)) {
+    as.numeric(strsplit(number, "B")[[1]]) * 1000000000
+  } else if (grepl("M", number)) {
+    as.numeric(strsplit(number, "M")[[1]]) * 1000000
+  } else if (grepl("K", number)) {
+    as.numeric(strsplit(number, "K")[[1]]) * 1000
+  } else {
+    as.numeric(number)
+  }
+}
+
+convertDate = function(date) {
+  as.Date(date, "%Y-%m-%d")
+}
+
+#convert for each of the 3 categories
+top50gamers$totalviews = sapply(top50gamers$totalviews, convert)
+top50gamers$subs = sapply(top50gamers$subs, convert)
+top50gamers$totalVids = sapply(top50gamers$totalVids, convert)
+top50gamers$date = sapply(top50gamers$join_date, convertDate)
+
+top50vloggers$totalviews = sapply(top50vloggers$totalviews, convert)
+top50vloggers$subs = sapply(top50vloggers$subs, convert)
+top50vloggers$totalVids = sapply(top50vloggers$totalVids, convert)
+top50vloggers$date = sapply(top50vloggers$join_date, convertDate)
+
+top50comedians$totalviews = sapply(top50comedians$totalviews, convert)
+top50comedians$subs = sapply(top50comedians$subs, convert)
+top50comedians$totalVids = sapply(top50comedians$totalVids, convert)
+top50comedians$date = sapply(top50comedians$join_date, convertDate)
+
+#sort them by subs
+top50comedians = top50comedians[order(-top50comedians$subs),]
+top50vloggers = top50vloggers[order(-top50vloggers$subs),]
+top50gamers = top50gamers[order(-top50gamers$subs),]
+
+#append their "ranks" based on subscriber count
+rank = c(1:50)
+top50gamers = cbind(top50gamers, data.frame(rank))
+top50vloggers = cbind(top50vloggers, data.frame(rank))
+top50comedians = cbind(top50comedians, data.frame(rank))
+
+#plot of how subscriber counts compare in 3 categories
+plot_subs = ggplot() + 
+geom_line(data=top50gamers, aes(x=rank, y=subs), color='green') + 
+geom_line(data=top50vloggers, aes(x=rank, y=subs), color='blue') + 
+geom_line(data=top50comedians, aes(x=rank, y=subs), color='red') + ggtitle("Number of Subscribers for Top 50 YouTubers of Each Category") +
+  xlab("Rank") + ylab("Number of Subscribers")
+
+plot_subs
+
+#plot of how total view counts compare in 3 categories
+plot_views = ggplot() + 
+geom_line(data=top50gamers, aes(x=rank, y=totalviews), color='green') + 
+geom_line(data=top50vloggers, aes(x=rank, y=totalviews), color='blue') + 
+geom_line(data=top50comedians, aes(x=rank, y=totalviews), color='red') + ggtitle("Number of Views for Top 50 YouTubers of Each Category") +
+xlab("Rank") + ylab("Total Views")
+
+plot_views
+
+#plot of how subscriber number of videos published compare in 3 categories
+plot_vids = ggplot() + 
+geom_line(data=top50gamers, aes(x=rank, y=totalVids), color='green') + 
+geom_line(data=top50vloggers, aes(x=rank, y=totalVids), color='blue') + 
+geom_line(data=top50comedians, aes(x=rank, y=totalVids), color='red') + ggtitle("Number of Total Videos for Top 50 YouTubers of Each Category") +
+xlab("Rank") + ylab("Total Videos")
+
+plot_vids
+
+#plot showing number of subscribers from when you joined
+ggplot() + 
+geom_line(data=top50gamers, aes(x=join_date, y=subs), color='green') + 
+geom_line(data=top50vloggers, aes(x=join_date, y=subs), color='blue') + 
+geom_line(data=top50comedians, aes(x=join_date, y=subs), color='red')  + ggtitle("Timeline of Join Dates of YouTubers and Number of Subscribers") +
+xlab("Date") + ylab("Number of Subscribers") + labs(fill = "Categories")
+
+```
+
+```{r}
+#create column for subscribers per vid
+top50gamers$subs_per_vid = top50gamers$subs / top50gamers$totalVids
+top50vloggers$subs_per_vid = top50vloggers$subs / top50vloggers$totalVids
+top50comedians$subs_per_vid = top50comedians$subs / top50comedians$totalVids
+
+#add column for their category
+top50gamers$category = "Game"
+top50vloggers$category = "Vlog"
+top50comedians$category = "Comedy"
+
+all_top_150 = rbind.fill(list(top50gamers, top50vloggers, top50comedians))
+
+top_subs_per_vid = head(all_top_150[order(-all_top_150$subs_per_vid), c("username", "subs_per_vid", "category")], 50)
+
+#creating pie chart
+tally_subs_per_vid = top_subs_per_vid %>% group_by(category) %>% tally()
+tally_subs_per_vid$pct = round(tally_subs_per_vid$n/sum(tally_subs_per_vid$n)*100)
+names(tally_subs_per_vid) <- c("Category", "Total", "Percentage")
+bp<- ggplot(tally_subs_per_vid, aes(x="", y=Percentage, fill=Category))+
+geom_bar(width = 1, stat = "identity")
+pie <- bp + coord_polar("y", start=0) + ggtitle("Categories of Top 50 YouTubers by Subscribers per Video")
+pie
+```
